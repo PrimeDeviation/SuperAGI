@@ -4,7 +4,7 @@ import requests
 from sqlalchemy import Column, Integer, String, Boolean
 
 from superagi.models.base_model import DBBaseModel
-
+from superagi.models.tool import Tool
 
 marketplace_url = "https://app.superagi.com/api"
 # marketplace_url = "http://localhost:8001"
@@ -112,8 +112,8 @@ class Toolkit(DBBaseModel):
             return None
 
     @staticmethod
-    def get_toolkit_from_name(session, toolkit_name):
-        toolkit = session.query(Toolkit).filter_by(name=toolkit_name).first()
+    def get_toolkit_from_name(session, toolkit_name, organisation):
+        toolkit = session.query(Toolkit).filter_by(name=toolkit_name, organisation_id=organisation.id).first()
         if toolkit:
             return toolkit
         return None
@@ -127,3 +127,38 @@ class Toolkit(DBBaseModel):
             else:
                 toolkit["is_installed"] = False
         return marketplace_toolkits
+
+    @classmethod
+    def fetch_tool_ids_from_toolkit(cls, session, toolkit_ids):
+        agent_toolkit_tools = []
+        for toolkit_id in toolkit_ids:
+            toolkit_tools = session.query(Tool).filter(Tool.toolkit_id == toolkit_id).all()
+            for tool in toolkit_tools:
+                tool = session.query(Tool).filter(Tool.id == tool.id).first()
+                if tool is not None:
+                    agent_toolkit_tools.append(tool.id)
+        return agent_toolkit_tools
+
+    @classmethod
+    def get_tool_and_toolkit_arr(cls, session, organisation_id :int,agent_config_tools_arr: list):
+        from superagi.models.tool import Tool
+        toolkits_arr= set()
+        tools_arr= set()
+        for tool_obj in agent_config_tools_arr:
+            toolkit=session.query(Toolkit).filter(Toolkit.name == tool_obj["name"].strip(), Toolkit.organisation_id == organisation_id).first()
+            if toolkit is None:
+                raise Exception("One or more of the Tool(s)/Toolkit(s) does not exist.")
+            toolkits_arr.add(toolkit.id)
+            if tool_obj.get("tools"):
+                for tool_name_str in tool_obj["tools"]:
+                    tool_db_obj = session.query(Tool).filter(Tool.name == tool_name_str.strip(),
+                                                             Tool.toolkit_id == toolkit.id).first()
+                    if tool_db_obj is None:
+                            raise Exception("One or more of the Tool(s)/Toolkit(s) does not exist.")
+
+                    tools_arr.add(tool_db_obj.id)
+            else:
+                tools=Tool.get_toolkit_tools(session, toolkit.id)
+                for tool_db_obj in tools:
+                    tools_arr.add(tool_db_obj.id)
+        return list(tools_arr)

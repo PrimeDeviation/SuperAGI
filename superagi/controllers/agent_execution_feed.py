@@ -1,10 +1,14 @@
+import asyncio
 from datetime import datetime
+import time
+from typing import Optional
 
-from fastapi import APIRouter
+from fastapi import APIRouter, BackgroundTasks
 from fastapi import HTTPException, Depends
 from fastapi_jwt_auth import AuthJWT
 from fastapi_sqlalchemy import db
-from pydantic_sqlalchemy import sqlalchemy_to_pydantic
+from pydantic import BaseModel
+
 from sqlalchemy.sql import asc
 
 from superagi.agent.task_queue import TaskQueue
@@ -14,13 +18,45 @@ from superagi.models.agent_execution_permission import AgentExecutionPermission
 from superagi.helper.feed_parser import parse_feed
 from superagi.models.agent_execution import AgentExecution
 from superagi.models.agent_execution_feed import AgentExecutionFeed
+from superagi.lib.logger import logger
+from superagi.agent.types.agent_workflow_step_action_types import AgentWorkflowStepAction
+from superagi.models.workflows.agent_workflow_step import AgentWorkflowStep
+from superagi.models.workflows.agent_workflow_step_wait import AgentWorkflowStepWait
+
+import re
+# from superagi.types.db import AgentExecutionFeedOut, AgentExecutionFeedIn
 
 router = APIRouter()
 
 
+class AgentExecutionFeedOut(BaseModel):
+    id: int
+    agent_execution_id: int
+    agent_id: int
+    feed: str
+    role: str
+    extra_info: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        orm_mode = True
+
+
+class AgentExecutionFeedIn(BaseModel):
+    id: int
+    agent_execution_id: int
+    agent_id: int
+    feed: str
+    role: str
+    extra_info: str
+
+    class Config:
+        orm_mode = True
+
 # CRUD Operations
-@router.post("/add", response_model=sqlalchemy_to_pydantic(AgentExecutionFeed), status_code=201)
-def create_agent_execution_feed(agent_execution_feed: sqlalchemy_to_pydantic(AgentExecutionFeed, exclude=["id"]),
+@router.post("/add", response_model=AgentExecutionFeedOut, status_code=201)
+def create_agent_execution_feed(agent_execution_feed: AgentExecutionFeedIn,
                                 Authorize: AuthJWT = Depends(check_auth)):
     """
     Add a new agent execution feed.
@@ -42,13 +78,14 @@ def create_agent_execution_feed(agent_execution_feed: sqlalchemy_to_pydantic(Age
 
     db_agent_execution_feed = AgentExecutionFeed(agent_execution_id=agent_execution_feed.agent_execution_id,
                                                  feed=agent_execution_feed.feed, type=agent_execution_feed.type,
-                                                 extra_info=agent_execution_feed.extra_info)
+                                                 extra_info=agent_execution_feed.extra_info,
+                                                 feed_group_id=agent_execution.current_feed_group_id)
     db.session.add(db_agent_execution_feed)
     db.session.commit()
     return db_agent_execution_feed
 
 
-@router.get("/get/{agent_execution_feed_id}", response_model=sqlalchemy_to_pydantic(AgentExecutionFeed))
+@router.get("/get/{agent_execution_feed_id}", response_model=AgentExecutionFeedOut)
 def get_agent_execution_feed(agent_execution_feed_id: int,
                              Authorize: AuthJWT = Depends(check_auth)):
     """
@@ -71,9 +108,9 @@ def get_agent_execution_feed(agent_execution_feed_id: int,
     return db_agent_execution_feed
 
 
-@router.put("/update/{agent_execution_feed_id}", response_model=sqlalchemy_to_pydantic(AgentExecutionFeed))
+@router.put("/update/{agent_execution_feed_id}", response_model=AgentExecutionFeedOut)
 def update_agent_execution_feed(agent_execution_feed_id: int,
-                                agent_execution_feed: sqlalchemy_to_pydantic(AgentExecutionFeed, exclude=["id"]),
+                                agent_execution_feed: AgentExecutionFeedIn,
                                 Authorize: AuthJWT = Depends(check_auth)):
     """
     Update a particular agent execution feed.
@@ -113,7 +150,7 @@ def update_agent_execution_feed(agent_execution_feed_id: int,
 
 @router.get("/get/execution/{agent_execution_id}")
 def get_agent_execution_feed(agent_execution_id: int,
-                             Authorize: AuthJWT = Depends(check_auth)):
+                                         Authorize: AuthJWT = Depends(check_auth)):
     """
     Get agent execution feed with other execution details.
 
@@ -134,8 +171,18 @@ def get_agent_execution_feed(agent_execution_id: int,
         asc(AgentExecutionFeed.created_at)).all()
     # # parse json
     final_feeds = []
+    error = ""
     for feed in feeds:
-        if feed.feed != "":
+        if feed.error_message:
+            if (agent_execution.last_shown_error_id is None) or (feed.id > agent_execution.last_shown_error_id):
+                #new error occured
+                error = feed.error_message
+                agent_execution.last_shown_error_id = feed.id
+                agent_execution.status = "ERROR_PAUSED"
+                db.session.commit()
+            if feed.id == agent_execution.last_shown_error_id and agent_execution.status == "ERROR_PAUSED":
+                error = feed.error_message
+        if feed.feed != "" and re.search(r"The current time and date is\s(\w{3}\s\w{3}\s\s?\d{1,2}\s\d{2}:\d{2}:\d{2}\s\d{4})",feed.feed) == None :
             final_feeds.append(parse_feed(feed))
 
     # get all permissions
@@ -150,14 +197,24 @@ def get_agent_execution_feed(agent_execution_id: int,
                 "response": permission.user_feedback,
                 "status": permission.status,
                 "tool_name": permission.tool_name,
+                "question": permission.question,
                 "user_feedback": permission.user_feedback,
-                "time_difference":get_time_difference(permission.created_at,str(datetime.now()))
+                "time_difference": get_time_difference(permission.created_at, str(datetime.now()))
         } for permission in execution_permissions
     ]
+
+    waiting_period = None
+
+    if agent_execution.status == AgentWorkflowStepAction.WAIT_STEP.value:
+        workflow_step = AgentWorkflowStep.find_by_id(db.session, agent_execution.current_agent_step_id)
+        waiting_period = (AgentWorkflowStepWait.find_by_id(db.session, workflow_step.action_reference_id)).delay
+
     return {
         "status": agent_execution.status,
         "feeds": final_feeds,
-        "permissions": permissions
+        "permissions": permissions,
+        "waiting_period": waiting_period,
+        "errors": error
     }
 
 

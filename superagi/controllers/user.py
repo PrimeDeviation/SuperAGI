@@ -1,27 +1,59 @@
+from datetime import datetime
+from typing import Optional
+
 from fastapi_sqlalchemy import db
 from fastapi import HTTPException, Depends, Request
 from fastapi_jwt_auth import AuthJWT
+from pydantic import BaseModel
 
 from superagi.models.organisation import Organisation
 from superagi.models.project import Project
 from superagi.models.user import User
 from fastapi import APIRouter
-from pydantic_sqlalchemy import sqlalchemy_to_pydantic
-from superagi.helper.auth import check_auth
+
+from superagi.helper.auth import check_auth, get_current_user
 from superagi.lib.logger import logger
+
+# from superagi.types.db import UserBase, UserIn, UserOut
 
 router = APIRouter()
 
 
+class UserBase(BaseModel):
+    name: str
+    email: str
+    password: str
+
+    class Config:
+        orm_mode = True
+
+
+class UserOut(UserBase):
+    id: int
+    organisation_id: int
+    created_at: datetime
+    updated_at: datetime
+
+    class Config:
+        orm_mode = True
+
+
+class UserIn(UserBase):
+    organisation_id: Optional[int]
+
+    class Config:
+        orm_mode = True
+
+
 # CRUD Operations
-@router.post("/add", response_model=sqlalchemy_to_pydantic(User), status_code=201)
-def create_user(user: sqlalchemy_to_pydantic(User, exclude=["id"]),
+@router.post("/add", response_model=UserOut, status_code=201)
+def create_user(user: UserIn,
                 Authorize: AuthJWT = Depends(check_auth)):
     """
     Create a new user.
 
     Args:
-        user (sqlalchemy_to_pydantic(User, exclude=["id"])): User data.
+        user (UserIn): User data.
 
     Returns:
         User: The created user.
@@ -44,7 +76,7 @@ def create_user(user: sqlalchemy_to_pydantic(User, exclude=["id"]),
     return db_user
 
 
-@router.get("/get/{user_id}", response_model=sqlalchemy_to_pydantic(User))
+@router.get("/get/{user_id}", response_model=UserOut)
 def get_user(user_id: int,
              Authorize: AuthJWT = Depends(check_auth)):
     """
@@ -68,16 +100,16 @@ def get_user(user_id: int,
     return db_user
 
 
-@router.put("/update/{user_id}", response_model=sqlalchemy_to_pydantic(User))
+@router.put("/update/{user_id}", response_model=UserOut)
 def update_user(user_id: int,
-                user: sqlalchemy_to_pydantic(User, exclude=["id"]),
+                user: UserBase,
                 Authorize: AuthJWT = Depends(check_auth)):
     """
     Update a particular user.
 
     Args:
         user_id (int): ID of the user.
-        user (sqlalchemy_to_pydantic(User, exclude=["id"])): Updated user data.
+        user (UserIn): Updated user data.
 
     Returns:
         User: The updated user details.
@@ -97,3 +129,16 @@ def update_user(user_id: int,
 
     db.session.commit()
     return db_user
+
+
+@router.post("/first_login_source/{source}")
+def update_first_login_source(source: str, Authorize: AuthJWT = Depends(check_auth)):
+    """ Update first login source of the user """
+    user = get_current_user(Authorize)
+    # valid_sources = ['google', 'github', 'email']
+    if user.first_login_source is None or user.first_login_source == '':
+        user.first_login_source = source
+    db.session.commit()
+    db.session.flush()
+    logger.info("User : ",user)
+    return user

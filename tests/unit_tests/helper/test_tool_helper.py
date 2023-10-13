@@ -1,6 +1,6 @@
-import json
 import os
 import shutil
+import sys
 from pathlib import Path
 from unittest.mock import patch, Mock
 
@@ -10,15 +10,19 @@ from superagi.helper.tool_helper import (
     parse_github_url,
     load_module_from_file,
     extract_repo_name,
-    add_tool_to_json, get_readme_content_from_code_link, download_tool
+    get_readme_content_from_code_link, download_tool, handle_tools_import, compare_toolkit, compare_configs,
+    compare_tools
 )
+
 
 def setup_function():
     os.makedirs('target_folder', exist_ok=True)
 
+
 # Teardown function to remove the directory
 def teardown_function():
     shutil.rmtree('target_folder')
+
 
 @pytest.fixture
 def mock_requests_get(monkeypatch):
@@ -94,3 +98,91 @@ def test_download_tool(mock_zip, mock_get):
 
     # Assert zipfile was opened correctly
     mock_zip.assert_called_once_with('target_folder/tool.zip', 'r')
+
+
+def test_handle_tools_import():
+    with patch('superagi.config.config.get_config') as mock_get_config, \
+            patch('os.listdir') as mock_listdir, \
+            patch('superagi.helper.auth.db') as mock_auth_db:
+        mock_get_config.return_value = "superagi/tools"
+        mock_listdir.return_value = "test_tool"
+        initial_path_length = len(sys.path)
+        handle_tools_import()
+        assert len(sys.path), initial_path_length + 2
+
+def test_compare_tools():
+    tool1 = {"name": "Tool A", "description": "This is Tool A"}
+    tool2 = {"name": "Tool A", "description": "This is Tool A"}
+    assert not compare_tools(tool1, tool2)
+
+    tool1 = {"name": "Tool A", "description": "This is Tool A"}
+    tool2 = {"name": "Tool B", "description": "This is Tool A"}
+    assert compare_tools(tool1, tool2)
+
+    tool1 = {"name": "Tool A", "description": "This is Tool A"}
+    tool2 = {"name": "Tool A", "description": "This is Tool B"}
+    assert compare_tools(tool1, tool2)
+
+def test_compare_configs():
+    config1 = {"key": "config_key"}
+    config2 = {"key": "config_key"}
+    assert not compare_configs(config1, config2)
+
+    config1 = {"key": "config_key_1"}
+    config2 = {"key": "config_key_2"}
+    assert compare_configs(config1, config2)
+
+def test_compare_toolkit():
+    toolkit1 = {
+        "description": "Toolkit Description",
+        "show_toolkit": True,
+        "name": "Toolkit",
+        "tool_code_link": "https://example.com/toolkit",
+        "tools": [{"name": "Tool A", "description": "This is Tool A"}],
+        "configs": [{"key": "config_key"}]
+    }
+    toolkit2 = {
+        "description": "Toolkit Description",
+        "show_toolkit": True,
+        "name": "Toolkit",
+        "tool_code_link": "https://example.com/toolkit",
+        "tools": [{"name": "Tool A", "description": "This is Tool A"}],
+        "configs": [{"key": "config_key"}]
+    }
+    assert not compare_toolkit(toolkit1, toolkit2)
+
+    toolkit1 = {
+        "description": "Toolkit Description",
+        "show_toolkit": True,
+        "name": "Toolkit",
+        "tool_code_link": "https://example.com/toolkit",
+        "tools": [{"name": "Tool A", "description": "This is Tool A"}],
+        "configs": [{"key": "config_key"}]
+    }
+    toolkit2 = {
+        "description": "Toolkit Description",
+        "show_toolkit": True,
+        "name": "Toolkit",
+        "tool_code_link": "https://example.com/toolkit",
+        "tools": [{"name": "Tool A", "description": "This is Tool B"}],
+        "configs": [{"key": "config_key"}]
+    }
+    assert compare_toolkit(toolkit1, toolkit2)
+
+    toolkit1 = {
+        "description": "Toolkit Description",
+        "show_toolkit": True,
+        "name": "Toolkit",
+        "tool_code_link": "https://example.com/toolkit",
+        "tools": [{"name": "Tool A", "description": "This is Tool A"}],
+        "configs": [{"key": "config_key_1"}]
+    }
+    toolkit2 = {
+        "description": "Toolkit Description",
+        "show_toolkit": True,
+        "name": "Toolkit",
+        "tool_code_link": "https://example.com/toolkit",
+        "tools": [{"name": "Tool A", "description": "This is Tool A"}],
+        "configs": [{"key": "config_key_2"}]
+    }
+    assert compare_toolkit(toolkit1, toolkit2)

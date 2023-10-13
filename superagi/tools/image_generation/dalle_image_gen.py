@@ -3,8 +3,11 @@ from typing import Type, Optional
 import requests
 from pydantic import BaseModel, Field
 
+from superagi.image_llms.openai_dalle import OpenAiDalle
 from superagi.llms.base_llm import BaseLlm
-from superagi.resource_manager.manager import ResourceManager
+from superagi.resource_manager.file_manager import FileManager
+from superagi.models.toolkit import Toolkit
+from superagi.models.configuration import Configuration
 from superagi.tools.base_tool import BaseTool
 
 class DalleImageGenInput(BaseModel):
@@ -22,19 +25,18 @@ class DalleImageGenTool(BaseTool):
         name : Name of the tool
         description : The description
         args_schema : The args schema
-        llm : The llm
         agent_id : The agent id
         resource_manager : Manages the file resources
     """
     name: str = "DalleImageGeneration"
     args_schema: Type[BaseModel] = DalleImageGenInput
     description: str = "Generate Images using Dalle"
-    llm: Optional[BaseLlm] = None
     agent_id: int = None
-    resource_manager: Optional[ResourceManager] = None
+    agent_execution_id: int = None
+    resource_manager: Optional[FileManager] = None
 
-    class Config:
-        arbitrary_types_allowed = True
+    # class Config:
+    #     arbitrary_types_allowed = True
 
     def _execute(self, prompt: str, image_names: list, size: int = 512, num: int = 2):
         """
@@ -49,9 +51,18 @@ class DalleImageGenTool(BaseTool):
         Returns:
             Image generated successfully message if image is generated or error message.
         """
+        session = self.toolkit_config.session
+        toolkit = session.query(Toolkit).filter(Toolkit.id == self.toolkit_config.toolkit_id).first()
+        organisation_id = toolkit.organisation_id
         if size not in [256, 512, 1024]:
             size = min([256, 512, 1024], key=lambda x: abs(x - size))
-        response = self.llm.generate_image(prompt, size, num)
+
+        api_key = self.get_tool_config("OPENAI_API_KEY")
+        if api_key is None:
+            return "Enter your OpenAi api key in the configuration"
+
+        response = OpenAiDalle(api_key=api_key, number_of_results=num).generate_image(
+            prompt, size)
         response = response.__dict__
         response = response['_previous']['data']
         for i in range(num):

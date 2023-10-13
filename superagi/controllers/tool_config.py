@@ -1,19 +1,31 @@
-from fastapi import APIRouter, HTTPException, Depends, Path
+from fastapi import APIRouter, HTTPException, Depends
+from fastapi_jwt_auth import AuthJWT
 from fastapi_sqlalchemy import db
-from pydantic_sqlalchemy import sqlalchemy_to_pydantic
+from pydantic import BaseModel
+
+from superagi.helper.auth import check_auth
+from superagi.helper.auth import get_user_organisation
 from superagi.models.organisation import Organisation
 from superagi.models.tool_config import ToolConfig
 from superagi.models.toolkit import Toolkit
-from fastapi_jwt_auth import AuthJWT
-from superagi.helper.auth import check_auth
-from superagi.helper.auth import get_user_organisation
-from typing import List
+from superagi.helper.encyption_helper import encrypt_data
+from superagi.helper.encyption_helper import decrypt_data, is_encrypted
+from superagi.types.key_type import ToolConfigKeyType
+import json
 
 router = APIRouter()
 
+class ToolConfigOut(BaseModel):
+    id = int
+    key = str
+    value = str
+    toolkit_id = int
+
+    class Config:
+        orm_mode = True
 
 @router.post("/add/{toolkit_name}", status_code=201)
-def update_tool_config(toolkit_name: str, configs: list):
+def update_tool_config(toolkit_name: str, configs: list, organisation: Organisation = Depends(get_user_organisation)):
     """
     Update tool configurations for a specific tool kit.
 
@@ -34,7 +46,7 @@ def update_tool_config(toolkit_name: str, configs: list):
 
     try:
         # Check if the tool kit exists
-        toolkit = Toolkit.get_toolkit_from_name(db.session, toolkit_name)
+        toolkit = Toolkit.get_toolkit_from_name(db.session, toolkit_name,organisation)
         if toolkit is None:
             raise HTTPException(status_code=404, detail="Tool kit not found")
 
@@ -42,11 +54,16 @@ def update_tool_config(toolkit_name: str, configs: list):
         for config in configs:
             key = config.get("key")
             value = config.get("value")
+            if value is None: 
+                continue
             if key is not None:
                 tool_config = db.session.query(ToolConfig).filter_by(toolkit_id=toolkit.id, key=key).first()
                 if tool_config:
+                    if tool_config.key_type ==  ToolConfigKeyType.FILE.value:
+                        value = json.dumps(value)
                     # Update existing tool config
-                    tool_config.value = value
+                    # added encryption
+                    tool_config.value = encrypt_data(value)
                     db.session.commit()
 
         return {"message": "Tool configs updated successfully"}
@@ -56,7 +73,7 @@ def update_tool_config(toolkit_name: str, configs: list):
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/create-or-update/{toolkit_name}", status_code=201, response_model=sqlalchemy_to_pydantic(ToolConfig))
+@router.post("/create-or-update/{toolkit_name}", status_code=201, response_model=ToolConfigOut)
 def create_or_update_tool_config(toolkit_name: str, tool_configs,
                                  Authorize: AuthJWT = Depends(check_auth)):
     """
@@ -72,25 +89,27 @@ def create_or_update_tool_config(toolkit_name: str, tool_configs,
     Raises:
         HTTPException (status_code=404): If the specified tool kit is not found.
     """
-
     toolkit = db.session.query(Toolkit).filter_by(name=toolkit_name).first()
     if not toolkit:
         raise HTTPException(status_code=404, detail='ToolKit not found')
 
     # Iterate over the tool_configs list
-    for tool_config_data in tool_configs:
+    for tool_config in tool_configs:
         existing_tool_config = db.session.query(ToolConfig).filter(
             ToolConfig.toolkit_id == toolkit.id,
-            ToolConfig.key == tool_config_data.key
+            ToolConfig.key == tool_config.key
         ).first()
 
-        if existing_tool_config:
+        if existing_tool_config.value:
             # Update the existing tool config
-            existing_tool_config.value = tool_config_data.value
+            if existing_tool_config.key_type == ToolConfigKeyType.FILE.value:
+                existing_tool_config.value = json.dumps(existing_tool_config.value)
+            existing_tool_config.value = encrypt_data(tool_config.value)
         else:
             # Create a new tool config
-            new_tool_config = ToolConfig(key=tool_config_data.key, value=tool_config_data.value, toolkit_id=toolkit.id)
+            new_tool_config = ToolConfig(key=tool_config.key, value=encrypt_data(tool_config.value), toolkit_id=toolkit.id)
             db.session.add(new_tool_config)
+    
 
     db.session.commit()
     db.session.refresh(toolkit)
@@ -114,14 +133,21 @@ def get_all_tool_configs(toolkit_name: str, organisation: Organisation = Depends
         HTTPException (status_code=404): If the specified tool kit is not found.
         HTTPException (status_code=403): If the user is not authorized to access the tool kit.
     """
-    user_toolkits = db.session.query(Toolkit).filter(Toolkit.organisation_id == organisation.id).all()
-    toolkit = db.session.query(Toolkit).filter_by(name=toolkit_name).first()
+
+    toolkit = db.session.query(Toolkit).filter(Toolkit.name == toolkit_name,
+                                               Toolkit.organisation_id == organisation.id).first()
+    
     if not toolkit:
         raise HTTPException(status_code=404, detail='ToolKit not found')
-    if toolkit.name not in [user_toolkit.name for user_toolkit in user_toolkits]:
-        raise HTTPException(status_code=403, detail='Unauthorized')
 
     tool_configs = db.session.query(ToolConfig).filter(ToolConfig.toolkit_id == toolkit.id).all()
+    for tool_config in tool_configs:
+        if tool_config.value:
+            if(is_encrypted(tool_config.value)):
+                tool_config.value = decrypt_data(tool_config.value)
+            if tool_config.key_type == ToolConfigKeyType.FILE.value:
+                tool_config.value = json.loads(tool_config.value)
+    
     return tool_configs
 
 
@@ -153,8 +179,11 @@ def get_tool_config(toolkit_name: str, key: str, organisation: Organisation = De
         ToolConfig.toolkit_id == toolkit.id,
         ToolConfig.key == key
     ).first()
-
     if not tool_config:
         raise HTTPException(status_code=404, detail="Tool configuration not found")
+    if(is_encrypted(tool_config.value)):
+        tool_config.value = decrypt_data(tool_config.value)
+    if tool_config.key_type == ToolConfigKeyType.FILE.value:
+        tool_config.value = json.loads(tool_config.value)
 
     return tool_config

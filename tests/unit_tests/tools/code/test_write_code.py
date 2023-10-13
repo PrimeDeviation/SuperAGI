@@ -2,9 +2,10 @@ from unittest.mock import Mock
 
 import pytest
 
-from superagi.resource_manager.manager import ResourceManager
+from superagi.resource_manager.file_manager import FileManager
 from superagi.tools.code.write_code import CodingTool
 from superagi.tools.tool_response_query_manager import ToolResponseQueryManager
+from unittest.mock import MagicMock
 
 
 class MockBaseLlm:
@@ -20,8 +21,10 @@ class TestCodingTool:
     def tool(self):
         tool = CodingTool()
         tool.llm = MockBaseLlm()
-        tool.resource_manager = Mock(spec=ResourceManager)
+        tool.resource_manager = Mock(spec=FileManager)
         tool.tool_response_manager = Mock(spec=ToolResponseQueryManager)
+        mock_session = MagicMock(name="session")
+        tool.toolkit_config.session = mock_session
         return tool
 
     def test_execute(self, tool):

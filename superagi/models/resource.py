@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, Float
+from sqlalchemy import Column, Integer, String, Float, Text
 from superagi.models.base_model import DBBaseModel
 from sqlalchemy.orm import sessionmaker
 
@@ -16,6 +16,7 @@ class Resource(DBBaseModel):
         type (String): The type of the resource (e.g., application/pdf).
         channel (String): The channel of the resource (INPUT, OUTPUT).
         agent_id (Integer): The ID of the agent associated with the resource.
+        agent_execution_id (Integer) : The ID of the agent execution corresponding to resource
     """
 
     __tablename__ = 'resources'
@@ -28,6 +29,8 @@ class Resource(DBBaseModel):
     type = Column(String)  # application/pdf etc
     channel = Column(String)  # INPUT,OUTPUT
     agent_id = Column(Integer)
+    agent_execution_id = Column(Integer)
+    summary = Column(Text)
 
     def __repr__(self):
         """
@@ -37,7 +40,7 @@ class Resource(DBBaseModel):
             str: String representation of the Resource object.
         """
 
-        return f"Resource(id={self.id}, name='{self.name}', storage_type='{self.storage_type}', path='{self.path}, size='{self.size}', type='{self.type}', channel={self.channel}, agent_id={self.agent_id})"
+        return f"Resource(id={self.id}, name='{self.name}', storage_type='{self.storage_type}', path='{self.path}, size='{self.size}', type='{self.type}', channel={self.channel}, agent_id={self.agent_id}, agent_execution_id={self.agent_execution_id})"
 
     @staticmethod
     def validate_resource_type(storage_type):
@@ -55,6 +58,11 @@ class Resource(DBBaseModel):
 
         if storage_type not in valid_types:
             raise InvalidResourceType("Invalid resource type")
-
+    
+    @classmethod
+    def find_by_run_ids(cls, session, run_ids: list):
+        db_resources_arr=session.query(Resource).filter(Resource.agent_execution_id.in_(run_ids)).all()
+        return db_resources_arr
+    
 class InvalidResourceType(Exception):
     """Custom exception for invalid resource type"""
